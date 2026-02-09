@@ -100,7 +100,7 @@ const frontendUrl = process.env.FRONTEND_URL;
 // ? frontendUrl.split(',').map((u) => u.trim()).filter(Boolean) : true
 app.use(
   cors({
-    origin: frontendUrl ? frontendUrl.split(',').map((u) => u.trim()).filter(Boolean) : true,
+    origin: frontendUrl,
     credentials: true,
   })
 );
