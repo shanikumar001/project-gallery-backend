@@ -12,7 +12,7 @@ export async function sendEmail({ to, subject, text, html }) {
     await emailApi.sendTransacEmail({
       sender: {
         email: process.env.EMAIL_FROM_ADDRESS || 'no-reply@projectgallery.com',
-        name: process.env.EMAIL_FROM_NAME || 'Project Gallery',
+        name: process.env.EMAIL_FROM_NAME || 'Pro Workers',
       },
       to: [{ email: to }],
       subject,
@@ -31,7 +31,7 @@ export async function sendEmail({ to, subject, text, html }) {
 export async function sendOtpEmail({ toEmail, otp }) {
   const result = await sendEmail({
     to: toEmail,
-    subject: 'Your verification code - Project Gallery',
+    subject: 'Your verification code - Pro Workers',
     text: `Your verification code is ${otp}. It expires in 10 minutes.`,
     html: `
       <p>Your verification code is: <strong>${otp}</strong></p>
@@ -52,7 +52,7 @@ export async function sendFollowRequestEmail({ toEmail, fromName }) {
   return sendEmail({
     to: toEmail,
     subject: `${fromName} wants to follow you`,
-    text: `${fromName} has sent you a follow request on Project Gallery.`,
+    text: `${fromName} has sent you a follow request on Pro Workers.`,
     html: `
       <p><strong>${fromName}</strong> has sent you a follow request.</p>
       <p>Log in to accept or decline.</p>
