@@ -20,6 +20,9 @@ import User from './models/User.js';
 import locationRoutes from './routes/location.js';
 import UserCard from './models/UserCard.js';
 import feedbackRoutes from './routes/feedback.js';
+import presenceRoutes from './routes/presence.js';
+import escrowRoutes from './routes/escrow.js';
+import notificationRoutes from './routes/notifications.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -153,11 +156,17 @@ app.use('/api/messages', messageRoutes);
 // Get all projects (public - no auth required)
 app.get('/api/projects', async (req, res) => {
   try {
-    const projects = await Project.find()
-      .sort({ order: 1, createdAt: -1 })
+    const { sort, lat, lon } = req.query;
+    const userLat = parseFloat(lat);
+    const userLon = parseFloat(lon);
+    const hasLocation = !isNaN(userLat) && !isNaN(userLon);
+
+    let projects = await Project.find()
+      .sort(sort === 'popular' ? { order: 1 } : { order: 1, createdAt: -1 })
       .populate('userId', 'name username profilePhoto')
       .lean();
-    const formatted = projects.map((p) => ({
+
+    let formatted = projects.map((p) => ({
       id: p._id.toString(),
       title: p.title,
       description: p.description,
@@ -175,6 +184,38 @@ app.get('/api/projects', async (req, res) => {
         ? { id: p.userId._id.toString(), name: p.userId.name, username: p.userId.username, profilePhoto: p.userId.profilePhoto }
         : null,
     }));
+
+    // Sort by likes (popular) - already fetched, sort in memory
+    if (sort === 'popular') {
+      formatted.sort((a, b) => (b.likeCount || 0) - (a.likeCount || 0));
+    }
+
+    // Sort by nearest (need creator location from UserCard)
+    if (hasLocation && sort === 'nearby') {
+      const userIds = [...new Set(formatted.map((p) => p.user?.id).filter(Boolean))];
+      const userCards = await UserCard.find({ userId: { $in: userIds } }).select('userId location').lean();
+      const locMap = new Map();
+      userCards.forEach((uc) => {
+        const coords = uc.location?.coordinates;
+        if (coords && (coords.latitude != null || coords.longitude != null)) {
+          locMap.set(uc.userId?.toString(), {
+            lat: coords.latitude ?? coords.lat,
+            lon: coords.longitude ?? coords.lng ?? coords.lon,
+          });
+        }
+      });
+      formatted = formatted.map((p) => {
+        const loc = locMap.get(p.user?.id);
+        let distance = Infinity;
+        if (loc && loc.lat != null && loc.lon != null) {
+          distance = haversineDistance(userLat, userLon, loc.lat, loc.lon);
+        }
+        return { ...p, _distance: distance };
+      });
+      formatted.sort((a, b) => a._distance - b._distance);
+      formatted = formatted.map(({ _distance, ...p }) => p);
+    }
+
     res.json(formatted);
   } catch (err) {
     console.error('Error fetching projects:', err);
@@ -284,14 +325,30 @@ const uploadProfilePhoto = async (localFilePath) => {
 };
 
 
-app.get("/api/user-card", async (req, res) => {
-  try {
-    const cards = await UserCard.find()
-      .sort({ order: 1, createdAt: -1 })
-      .populate('userId', 'name username profilePhoto')
-      .select("fullName username passion skills profilePhoto location order createdAt education portfolioUrl projectDemoUrl userId");
+const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-    const formatted = cards.map((card) => ({
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Get current user's card (authenticated)
+app.get("/api/user-card/me", authenticateToken, async (req, res) => {
+  try {
+    const card = await UserCard.findOne({ userId: req.user._id })
+      .populate('userId', 'name username profilePhoto lastSeenAt')
+      .lean();
+    if (!card) return res.status(404).json({ error: 'No profile card found' });
+    const lastSeen = card.userId?.lastSeenAt ? new Date(card.userId.lastSeenAt).getTime() : 0;
+    const isOnline = Date.now() - lastSeen < ACTIVE_THRESHOLD_MS;
+    res.json({
       id: card._id.toString(),
       fullName: card.fullName,
       username: card.username,
@@ -304,14 +361,95 @@ app.get("/api/user-card", async (req, res) => {
       projectDemoUrl: card.projectDemoUrl,
       order: card.order,
       createdAt: card.createdAt,
-      user: card.userId ? {
-        id: card.userId._id.toString(),
-        name: card.userId.name,
-        username: card.userId.username,
-        profilePhoto: card.userId.profilePhoto,
-      } : null,
+      rating: card.rating ?? 0,
+      ratingCount: card.ratingCount ?? 0,
+      isOnline: !!isOnline,
+      lastSeenAt: card.userId?.lastSeenAt || null,
+      user: card.userId ? { id: card.userId._id.toString(), name: card.userId.name, username: card.userId.username, profilePhoto: card.userId.profilePhoto } : null,
       userId: card.userId ? card.userId._id.toString() : null,
-    }));
+    });
+  } catch (err) {
+    console.error('Fetch my user card error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete current user's card
+app.delete("/api/user-card", authenticateToken, async (req, res) => {
+  try {
+    const result = await UserCard.deleteOne({ userId: req.user._id });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'No profile card found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete user card error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/user-card", async (req, res) => {
+  try {
+    const { passion, location, lat, lon, radiusKm, sort } = req.query;
+    let query = {};
+
+    if (passion?.trim()) {
+      query.passion = { $regex: passion.trim(), $options: 'i' };
+    }
+    if (location?.trim()) {
+      query['location.address'] = { $regex: location.trim(), $options: 'i' };
+    }
+
+    const sortObj = sort === 'rating' ? { rating: -1, ratingCount: -1, order: 1 } : { order: 1, createdAt: -1 };
+    const cards = await UserCard.find(query)
+      .sort(sortObj)
+      .populate('userId', 'name username profilePhoto lastSeenAt')
+      .select("fullName username passion skills profilePhoto location order createdAt education portfolioUrl projectDemoUrl userId rating ratingCount")
+      .lean();
+
+    let formatted = cards.map((card) => {
+      const lastSeen = card.userId?.lastSeenAt ? new Date(card.userId.lastSeenAt).getTime() : 0;
+      const isOnline = Date.now() - lastSeen < ACTIVE_THRESHOLD_MS;
+      return {
+        id: card._id.toString(),
+        fullName: card.fullName,
+        username: card.username,
+        passion: card.passion,
+        education: card.education,
+        skills: card.skills,
+        profilePhoto: card.profilePhoto,
+        location: card.location,
+        portfolioUrl: card.portfolioUrl,
+        projectDemoUrl: card.projectDemoUrl,
+        order: card.order,
+        createdAt: card.createdAt,
+        rating: card.rating ?? 0,
+        ratingCount: card.ratingCount ?? 0,
+        isOnline: !!isOnline,
+        lastSeenAt: card.userId?.lastSeenAt || null,
+        user: card.userId ? {
+          id: card.userId._id.toString(),
+          name: card.userId.name,
+          username: card.userId.username,
+          profilePhoto: card.userId.profilePhoto,
+        } : null,
+        userId: card.userId ? card.userId._id.toString() : null,
+      };
+    });
+
+    // Filter by live location (lat, lon, radiusKm) if provided
+    const userLat = parseFloat(lat);
+    const userLon = parseFloat(lon);
+    const radius = parseFloat(radiusKm) || 50;
+    if (!isNaN(userLat) && !isNaN(userLon)) {
+      formatted = formatted.filter((c) => {
+        const coords = c.location?.coordinates;
+        if (!coords || (coords.latitude == null && coords.longitude == null)) return true;
+        const lat2 = coords.latitude ?? coords.lat;
+        const lon2 = coords.longitude ?? coords.lng ?? coords.lon;
+        if (lat2 == null || lon2 == null) return true;
+        const dist = haversineDistance(userLat, userLon, lat2, lon2);
+        return dist <= radius;
+      });
+    }
 
     res.json(formatted);
   } catch (err) {
@@ -340,15 +478,6 @@ app.post(
         coordinates,
       } = req.body;
 
-      /* ---------- Validation ---------- */
-      if (!fullName?.trim()) {
-        return res.status(400).json({ error: "Full name is required" });
-      }
-
-      if (!username?.trim()) {
-        return res.status(400).json({ error: "Username is required" });
-      }
-
       const skillsArray = Array.isArray(skills)
         ? skills
         : skills?.split(",").map((s) => s.trim()).filter(Boolean);
@@ -366,33 +495,44 @@ app.post(
             : coordinates;
       }
 
-      /* ---------- Upload profile photo ---------- */
+      /* ---------- Upload profile photo / sync from User ---------- */
       let profilePhoto;
+      const userDoc = await User.findById(req.user._id).select('name username profilePhoto').lean();
 
       if (req.file) {
         const uploadResult = await uploadProfilePhoto(req.file.path);
-
         if (!uploadResult) {
           return res.status(500).json({ error: "Profile photo upload failed" });
         }
-
-        profilePhoto = {
-          url: uploadResult.secure_url,
-          filename: uploadResult.public_id,
-        };
+        profilePhoto = { url: uploadResult.secure_url, filename: uploadResult.public_id };
+        await User.findByIdAndUpdate(req.user._id, { profilePhoto: uploadResult.secure_url });
+      } else if (userDoc?.profilePhoto) {
+        profilePhoto = typeof userDoc.profilePhoto === 'string'
+          ? { url: userDoc.profilePhoto, filename: '' }
+          : userDoc.profilePhoto;
       }
+
+      /* ---------- Sync name/username: use User's if creating, else payload; update User ---------- */
+      const trimmedName = fullName?.trim() || userDoc?.name || req.user.name || '';
+      const trimmedUsername = username?.trim().toLowerCase() || userDoc?.username || req.user.username || '';
+      if (!trimmedName || !trimmedUsername) {
+        return res.status(400).json({ error: "Full name and username are required" });
+      }
+
+      await User.findByIdAndUpdate(req.user._id, {
+        name: trimmedName,
+        username: trimmedUsername,
+      });
 
       /* ---------- Order handling ---------- */
       const existingCard = await UserCard.findOne({ userId: req.user._id });
-      const order = existingCard
-        ? existingCard.order
-        : await UserCard.countDocuments();
+      const order = existingCard ? existingCard.order : await UserCard.countDocuments();
 
       /* ---------- Payload ---------- */
       const payload = {
         userId: req.user._id,
-        fullName: fullName.trim(),
-        username: username.trim().toLowerCase(),
+        fullName: trimmedName,
+        username: trimmedUsername,
         passion: passion?.trim() || "",
         education: education?.trim() || "",
         skills: skillsArray,
@@ -409,18 +549,24 @@ app.post(
         payload.profilePhoto = profilePhoto;
       }
 
-      /* ---------- Create or Update ---------- */
+      /* ---------- Create or Update (one card per user) ---------- */
       const userCard = await UserCard.findOneAndUpdate(
         { userId: req.user._id },
         payload,
         { new: true, upsert: true }
       ).populate('userId', 'name username profilePhoto');
 
+      const updatedUser = await User.findById(req.user._id).select('name username profilePhoto').lean();
       /* ---------- Response ---------- */
       res.status(201).json({
         id: userCard._id.toString(),
         fullName: userCard.fullName,
         username: userCard.username,
+        updatedUser: updatedUser ? {
+          name: updatedUser.name,
+          username: updatedUser.username,
+          profilePhoto: updatedUser.profilePhoto,
+        } : null,
         passion: userCard.passion,
         education: userCard.education,
         skills: userCard.skills,
@@ -456,11 +602,20 @@ app.use('/api/location', locationRoutes);
 // Feedback routes
 app.use('/api/feedback', feedbackRoutes);
 
+// Presence (online status)
+app.use('/api/presence', presenceRoutes);
+
+// Escrow projects & payments
+app.use('/api/escrow', escrowRoutes);
+
+// Notifications
+app.use('/api/notifications', notificationRoutes);
+
 
 
 // Project interactions (like, comment, save)
 app.use('/api/projects', projectRoutes);
 
 app.listen(PORT, () => {
-  console.log(`Project Gallery API running at http://localhost:${PORT}`);
+  console.log(`ProWorkers API running at http://localhost:${PORT}`);
 });

@@ -37,7 +37,7 @@ export async function sendOtpSms({ toPhone, otp }) {
 
   try {
     await twilioClient.messages.create({
-      body: `Your Project Gallery verification code is: ${otp}. It expires in 10 minutes.`,
+      body: `Your ProWorkers verification code is: ${otp}. It expires in 10 minutes.`,
       from: fromNumber,
       to: toPhone,
     });

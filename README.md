@@ -1,6 +1,6 @@
-# Project Gallery Backend
+# ProWorkers Backend
 
-Node.js/Express backend for Project Gallery application.
+Node.js/Express backend for ProWorkers application.
 
 ## Features
 

@@ -16,6 +16,13 @@ const userSchema = new mongoose.Schema(
     followers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     connections: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    lastSeenAt: { type: Date, default: null },
+    bankAccount: {
+      accountHolder: { type: String, default: '' },
+      accountNumber: { type: String, default: '' },
+      ifscCode: { type: String, default: '' },
+      upiId: { type: String, default: '' },
+    },
   },
   { timestamps: true, collection: 'project_user' }
 );

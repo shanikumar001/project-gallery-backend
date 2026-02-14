@@ -4,6 +4,7 @@ import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { sendNewMessageEmail } from '../services/email.js';
+import { sendPushToUser } from '../services/push.js';
 
 const router = express.Router();
 
@@ -153,12 +154,19 @@ router.post('/', authenticateToken, async (req, res) => {
       text: text.trim(),
     });
 
+    const messagePreview = text.trim().slice(0, 100) + (text.trim().length > 100 ? '...' : '');
     sendNewMessageEmail({
       toEmail: receiver.email,
       toName: receiver.name,
       fromName: req.user.name,
-      messagePreview: text.trim().slice(0, 100) + (text.trim().length > 100 ? '...' : ''),
+      messagePreview,
     }).catch(() => {});
+
+    sendPushToUser(toUserId, {
+      title: 'New message',
+      body: `${req.user.name}: ${messagePreview}`,
+      data: { type: 'message', fromUserId: me.toString(), fromName: req.user.name },
+    }).catch((err) => console.error('Push (message) failed:', err?.message));
 
     res.status(201).json({
       id: message._id.toString(),

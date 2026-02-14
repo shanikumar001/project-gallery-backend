@@ -8,9 +8,11 @@ import cloudinary from '../cloudinary.js';
 
 import { authenticateToken } from '../middleware/auth.js';
 import User from '../models/User.js';
+import UserCard from '../models/UserCard.js';
 import Project from '../models/Project.js';
 import FollowRequest from '../models/FollowRequest.js';
 import { sendFollowRequestEmail } from '../services/email.js';
+import { sendPushToUser } from '../services/push.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -198,6 +200,15 @@ router.put(
         runValidators: true,
       }).select('-password');
 
+      // Sync UserCard with User (name, username, profilePhoto)
+      const cardUpdates = {};
+      if (updates.name) cardUpdates.fullName = updates.name;
+      if (updates.username) cardUpdates.username = updates.username;
+      if (updates.profilePhoto) cardUpdates.profilePhoto = { url: updates.profilePhoto, filename: '' };
+      if (Object.keys(cardUpdates).length > 0) {
+        await UserCard.updateOne({ userId: req.user._id }, { $set: cardUpdates });
+      }
+
       res.json({
         user: {
           id: user._id.toString(),
@@ -254,6 +265,12 @@ router.post('/:id/follow', authenticateToken, async (req, res) => {
       toName: target.name,
       fromName: req.user.name,
     });
+
+    sendPushToUser(targetId, {
+      title: 'Follow request',
+      body: `${req.user.name} wants to follow you`,
+      data: { type: 'follow_request', fromUserId: req.user._id.toString(), fromName: req.user.name },
+    }).catch((err) => console.error('Push (follow request) failed:', err?.message));
 
     res.json({ success: true, requested: true });
   } catch (err) {

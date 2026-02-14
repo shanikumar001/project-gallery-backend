@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: project-gallery-backend
+    name: proworkers-backend
     env: node
     plan: free
     buildCommand: npm install
