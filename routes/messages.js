@@ -1,15 +1,15 @@
-import express from 'express';
-import mongoose from 'mongoose';
-import Message from '../models/Message.js';
-import User from '../models/User.js';
-import { authenticateToken } from '../middleware/auth.js';
-import { sendNewMessageEmail } from '../services/email.js';
-import { sendPushToUser } from '../services/push.js';
+import express from "express";
+import mongoose from "mongoose";
+import Message from "../models/Message.js";
+import User from "../models/User.js";
+import { authenticateToken } from "../middleware/auth.js";
+import { sendNewMessageEmail } from "../services/email.js";
+import { sendPushToUser } from "../services/push.js";
 
 const router = express.Router();
 
 // Get conversations list (anyone you've chatted with) with last message and unread count
-router.get('/conversations', authenticateToken, async (req, res) => {
+router.get("/conversations", authenticateToken, async (req, res) => {
   try {
     const me = req.user._id;
     const messages = await Message.find({
@@ -20,7 +20,10 @@ router.get('/conversations', authenticateToken, async (req, res) => {
 
     const byOther = new Map();
     for (const m of messages) {
-      const otherId = m.senderId.toString() === me.toString() ? m.receiverId.toString() : m.senderId.toString();
+      const otherId =
+        m.senderId.toString() === me.toString()
+          ? m.receiverId.toString()
+          : m.senderId.toString();
       if (!byOther.has(otherId)) {
         byOther.set(otherId, { lastMessage: m, unreadCount: 0 });
       }
@@ -32,16 +35,38 @@ router.get('/conversations', authenticateToken, async (req, res) => {
 
     const userIds = [...byOther.keys()];
     const users = await User.find({ _id: { $in: userIds } })
-      .select('name profilePhoto')
+      .select("name profilePhoto")
       .lean();
     const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+
+    // find any pending escrow project offers between me and these users
+    const pendingMap = new Map();
+    try {
+      const pending = await (
+        await import("../models/EscrowProject.js")
+      ).default
+        .find({
+          status: "offer_sent",
+          $or: [{ clientId: me }, { workerId: me }],
+        })
+        .lean();
+      for (const p of pending) {
+        const other =
+          p.clientId.toString() === me.toString()
+            ? p.workerId.toString()
+            : p.clientId.toString();
+        pendingMap.set(other, true);
+      }
+    } catch (err) {
+      // ignore
+    }
 
     const list = userIds.map((uid) => {
       const { lastMessage, unreadCount } = byOther.get(uid);
       const u = userMap.get(uid) || {};
       return {
         id: uid,
-        name: u.name || 'Unknown',
+        name: u.name || "Unknown",
         profilePhoto: u.profilePhoto,
         lastMessage: lastMessage
           ? {
@@ -51,6 +76,7 @@ router.get('/conversations', authenticateToken, async (req, res) => {
             }
           : null,
         unreadCount,
+        hasPendingProject: pendingMap.has(uid) || false,
       };
     });
 
@@ -67,7 +93,7 @@ router.get('/conversations', authenticateToken, async (req, res) => {
 });
 
 // Unread count (total)
-router.get('/unread-count', authenticateToken, async (req, res) => {
+router.get("/unread-count", authenticateToken, async (req, res) => {
   try {
     const count = await Message.countDocuments({
       receiverId: req.user._id,
@@ -80,10 +106,11 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
 });
 
 // Mark messages as read (conversation with userId)
-router.post('/read', authenticateToken, async (req, res) => {
+router.post("/read", authenticateToken, async (req, res) => {
   try {
     const { with: withUserId } = req.body;
-    if (!withUserId) return res.status(400).json({ error: 'with (userId) required' });
+    if (!withUserId)
+      return res.status(400).json({ error: "with (userId) required" });
 
     await Message.updateMany(
       {
@@ -91,7 +118,7 @@ router.post('/read', authenticateToken, async (req, res) => {
         receiverId: req.user._id,
         read: false,
       },
-      { read: true }
+      { read: true },
     );
     res.json({ success: true });
   } catch (err) {
@@ -100,11 +127,13 @@ router.post('/read', authenticateToken, async (req, res) => {
 });
 
 // Get messages between current user and another user
-router.get('/', authenticateToken, async (req, res) => {
+router.get("/", authenticateToken, async (req, res) => {
   try {
     const withUserId = req.query.with;
     if (!withUserId) {
-      return res.status(400).json({ error: 'Query param "with" (userId) required' });
+      return res
+        .status(400)
+        .json({ error: 'Query param "with" (userId) required' });
     }
 
     const me = req.user._id;
@@ -137,16 +166,16 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // Send message (anyone can message anyone)
-router.post('/', authenticateToken, async (req, res) => {
+router.post("/", authenticateToken, async (req, res) => {
   try {
     const { toUserId, text } = req.body;
     if (!toUserId || !text?.trim()) {
-      return res.status(400).json({ error: 'toUserId and text required' });
+      return res.status(400).json({ error: "toUserId and text required" });
     }
 
     const me = req.user._id;
-    const receiver = await User.findById(toUserId).select('name email');
-    if (!receiver) return res.status(404).json({ error: 'User not found' });
+    const receiver = await User.findById(toUserId).select("name email");
+    if (!receiver) return res.status(404).json({ error: "User not found" });
 
     const message = await Message.create({
       senderId: me,
@@ -154,7 +183,8 @@ router.post('/', authenticateToken, async (req, res) => {
       text: text.trim(),
     });
 
-    const messagePreview = text.trim().slice(0, 100) + (text.trim().length > 100 ? '...' : '');
+    const messagePreview =
+      text.trim().slice(0, 100) + (text.trim().length > 100 ? "..." : "");
     sendNewMessageEmail({
       toEmail: receiver.email,
       toName: receiver.name,
@@ -163,10 +193,14 @@ router.post('/', authenticateToken, async (req, res) => {
     }).catch(() => {});
 
     sendPushToUser(toUserId, {
-      title: 'New message',
+      title: "New message",
       body: `${req.user.name}: ${messagePreview}`,
-      data: { type: 'message', fromUserId: me.toString(), fromName: req.user.name },
-    }).catch((err) => console.error('Push (message) failed:', err?.message));
+      data: {
+        type: "message",
+        fromUserId: me.toString(),
+        fromName: req.user.name,
+      },
+    }).catch((err) => console.error("Push (message) failed:", err?.message));
 
     res.status(201).json({
       id: message._id.toString(),
